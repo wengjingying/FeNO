@@ -1,0 +1,527 @@
+---
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+# Demo
+
+This is a step by step demo analyzing FeNO data using our U-HB method and other unified or two-stage methods.
+
+<br>
+
+### 1. Generate dateset for simulation
+
+
+First, we need to build a dataset which mimics the real FeNO data. Here we use Scenario 1 for example (all NO parameters are affected by environment factor X) There are several key parameters here: number of subjects in the study, number of maneuvers, maneuvers’ flow rates, etc. We set them the same as in the paper but shrink the number of subjects to 20 to obtain a fast example. This number may be expanded to any sample size to see if it is large enough to achieve converged results. We will build a balanced dataset (subjects have same number of maneuvers of each tested exhale flow rate) first and there is also an unbalanced dataset example in section #.
+
+
+```{r,message=FALSE,eval=FALSE}
+rm(list=ls())
+demoseed <- 2020
+Ndat <- 20
+source("/Users/wengjingying/Downloads/FeNO/eno/Demofunctions.R")
+
+# Total number of subjects in simulated datasets
+
+
+enodata<-Obs_FB(alpha=alpha,beta=beta,X=X,Flow=flow,SD=sderror,NOcov=CovMat_chs_Caw)
+save(enodata, file="data_S1.Rdata")
+```
+
+<br>
+
+### 2. Model fitting
+
+### 2.1 U-HB
+
+We start fitting U-HB model by using short iterations for a pilot run to check for any existing errors. The initial burning and MCMC iterations (N.iterT/2) were set to be 120 and 120. We let the model go through a 120 iteration update (addon.iter=120, Max_update=1) and process to the 600 iteration posterior sampling stage (n.final=600). Those interations are so short that we expect large Rhats value, which indicate failure of converge. So we also set the Rhat criteria (rhat) as large as 5 for the criteria test. Those iteration numbers should be at least ten times as what we set here to achieve convergence (Rhat<1.1, N.iterT=12000,addon.iter=6000,Max_update=40,n.final=6000).
+
+After setting the parameters, we record the starting time, run a burning process and an initial update, then we check Rhats first, if are less than the  criteria we set, we go to theposterior sampling stage, if not, we update the MCMC up to a maximum times we set to fulfill the Rhat criteria and go to posteria sampling stage.
+
+
+```{r,eval=FALSE}
+
+# set Gelman Rubin criteria
+rhat=5
+# set how many iterations needed for update MCMC
+addon.iter=120
+# maximum updates
+Max_update=1
+# iterarions needed to generate posterior distribution
+n.final=600
+# starting iteration numbers (1/3 will be burning)
+N.iterT=240
+# measurement error
+sigma2=1e-3
+
+# generate random initial values
+set.seed(demoseed)
+
+inits_FcovC <- 
+    list(
+      list(
+        tau_c=runif(1,0.05,400), #could be unif too
+        alpha_Ca=runif(1,0,5),
+        alpha_logCaw=runif(1,0,5),
+        alpha_logDaw=runif(1,0,5),
+        beta_Ca=runif(1,-1,1),
+        beta_logCaw=runif(1,-1,1),
+        beta_logDaw=runif(1,-1,1)
+      ),
+      list(
+        tau_c=runif(1,0.05,400),
+        alpha_Ca=runif(1,0,5),
+        alpha_logCaw=runif(1,0,5),
+        alpha_logDaw=runif(1,0,5),
+        beta_Ca=runif(1,-1,1),
+        beta_logCaw=runif(1,-1,1),
+        beta_logDaw=runif(1,-1,1)
+      ),
+      list(
+        tau_c=runif(1,0.05,400),
+        alpha_Ca=runif(1,0,5),
+        alpha_logCaw=runif(1,0,5),
+        alpha_logDaw=runif(1,0,5),
+        beta_Ca=runif(1,-1,1),
+        beta_logCaw=runif(1,-1,1),
+        beta_logDaw=runif(1,-1,1)
+      )
+    )
+
+# set monitors for parameters we want to track
+param.R2jags_NOTX <-c("alpha_Ca","alpha_logCaw","alpha_logDaw",
+                        "beta_Ca","beta_logCaw","beta_logDaw",
+                        "Ca","logCaw","logDaw",
+                        "sdCa","sdlogCaw","sdlogDaw","corlogCawCa","corlogCawlogDaw","corlogDawCa",
+                        "sigma_c")
+
+
+
+# set priors
+alphaC_prior=c(2,log(68),log(12))
+betaC_prior =c(0,0,0)
+
+flow <- c(rep(30,2),rep(50,2),rep(100,2),rep(300,2)) #specify flow rates
+
+```
+
+
+```{r,eval=FALSE}
+# set data set 
+data_cov <- list(Ndat=length(enodata$X),Nflows=length(flow),flow=flow,logeno=enodata$logeno,X=enodata$X,
+                 betaC_prior=betaC_prior,alphaC_prior=alphaC_prior)
+
+
+set.seed(demoseed)
+
+time<-proc.time()[3]
+#### truncated model
+
+# Run jags
+fit.R2jags_NOXT<- jags(data=data_cov, parameters.to.save=param.R2jags_NOTX, inits=inits_FcovC,
+                         model.file=truncationNOX, n.chains=3, n.iter=N.iterT, n.burnin=N.iterT/2) 
+N_updateT=0 #count how many updates needed
+N_final=0 # count how many times the first check was met
+while(N_updateT<Max_update){
+  # check weather the Rhats of intereset parameters was less then pre-set criteria
+    if(max(fit.R2jags_NOXT$BUGSoutput$summary[rownames(fit.R2jags_NOXT$BUGSoutput$summary) %in% param.R2jags_NOTX,"Rhat" ])<rhat){
+      # if yes
+      fit.R2jags_NOXT<-update(fit.R2jags_NOXT,n.iter=n.final)
+      N_final=N_final+1
+      # print the Rhat after the final runs to see if it is stable
+      print(fit.R2jags_NOXT$BUGSoutput$summary[rownames(fit.R2jags_NOXT$BUGSoutput$summary) %in% param.CHS_Xs,"Rhat" ])
+      # check Rhat again
+      if(max(fit.R2jags_NOXT$BUGSoutput$summary[rownames(fit.R2jags_NOXT$BUGSoutput$summary) %in% param.R2jags_NOTX,"Rhat" ])<rhat){
+        # if yes we are done, if not, we back to update step again
+        break
+      }
+    }
+    fit.R2jags_NOXT<-update(fit.R2jags_NOXT,n.iter=addon.iter)
+    N_updateT<-N_updateT+1
+    print("update")
+    print(N_updateT)
+  }
+
+
+# Thats how we know how long we needed for U-HB
+timespend<-proc.time()[3]-time
+print(timespend)
+# we also save summary informations for trimed mean value and quantiles other than defauld Jags summary (mean, Median, SD, etc)
+trimmean<-apply(fit.R2jags_NOXT$BUGSoutput$sims.matrix,2,function(x) mean(x, 0.2))
+quantile1_99<-t(apply(fit.R2jags_NOXT$BUGSoutput$sims.matrix,2,function(x) quantile(x, c(0.005,0.995))))
+result<-list(
+  DIC=fit.R2jags_NOXT$BUGSoutput$DIC,
+  pD=fit.R2jags_NOXT$BUGSoutput$pD,
+  timespend=timespend,
+  summary=cbind(fit.R2jags_NOXT$BUGSoutput$summary,"trimmean"=trimmean,quantile1_99),
+  Iter_T=N.iterT+N_updateT*addon.iter+n.final*N_final,#total not summary iter
+  Iter_track=c(N.iterT=N.iterT,N_updateT=N_updateT,addon.iter=addon.iter,n.final=n.final,N_final=N_final)
+)
+
+fit.R2jags_NOXT$BUGSoutput$summary[rownames(fit.R2jags_NOXT$BUGSoutput$summary) %in% param.R2jags_NOTX,"Rhat" ]
+
+save(result, file="UHB_S1.Rdata")
+
+```
+
+<br>
+
+
+### 2.2 TS-NLS
+
+NLS uses a different dataset structure from the one used for U-HB. It fits parameters for each subjects independently. 
+```{r,eval=FALSE}
+logenodata<-melt(data.frame(id=c(1:Ndat),enodata$logeno),id="id")
+logenodata<-logenodata[order(logenodata$id,decreasing = FALSE),]
+datOut <- data.frame(id=rep(c(1:Ndat),each=length(flow)),eno=NA,logeno=NA,flow=rep(flow,Ndat),X=rep(enodata$X,each=length(flow)))
+datOut$logeno <- logenodata$value
+datOut$eno    <-exp(datOut$logeno)
+datOut$invFlow<-1/datOut$flow
+datOut$enoflow<-datOut$flow*datOut$eno
+
+dat <- datOut
+X <- enodata$X
+
+starttime=proc.time()[3]
+# prelminary function for NLS 2-stage and for NLME functions
+
+# fit for TS-NLS
+fitnls <- nlsListStart(dat)
+# summary how many subjects' data failed to fit NLS
+nls_NA<-sum(is.na(coef(fitnls)[,1]))
+
+
+# generate NLS result
+NLSout <- tryCatch(nls_FINAL(fitnls,X), error = function(x) {
+    print("Error with nls");
+    warnings();
+    data.frame(    est=rep(NA,6),
+                   lb=rep(NA,6),
+                   ub=rep(NA,6),
+                   se=rep(NA,6),
+                   p=rep(NA,6)
+    )
+  }
+  )
+
+elapsed=proc.time()[3]-starttime
+colnames(NLSout)<-paste("NLS",c("est","lb","ub","se","p"),sep="_")
+save(elapsed,NLSout,nls_NA, file="NLS_S1.Rdata")
+```
+
+
+### 2.3 TS-HMA
+
+TS-HMA used the same dataset structure as TS-NLS.
+```{r,echo=FALSE}
+Hogman3rdOrderAlg <- function(fL,fM,fH,eL,eM,eH){  
+  # linT approximation on high flows to get S=CaNO and I
+  CaNO_est <- S <- (fH*eH - fM*eM)/(fH-fM)
+  # solve for I using linT model at medium flow rate (flow=100)
+  I <- (fM*eM - S*fM)
+  JawNO_est  <- I
+  
+  # first order approximation starting value
+  Dw0_fo <- I/(eL - S)
+  
+  # iterative algorithm function, 1st order
+  italg <- function(SV,nIterAlg=10){
+    # object to store Dw values for each iteration
+    outIterAlg <- numeric(nIterAlg)
+    # set starting value (SV)
+    Dw_n <- SV
+    for(i in 1:nIterAlg){
+      Dw_nplus1 <- outIterAlg[i] <-  -I*(exp(-Dw_n/fL) - exp(-Dw_n/fM))/(eL-eM) # Inf-NAN-error
+      diffDw <- abs(Dw_n - Dw_nplus1)
+      #print(i);print(Dw_nplus1)
+      # stop if values of Dw_n and Dw_nplus1 are close enough
+      if(diffDw <0.001){break}
+      Dw_n <- Dw_nplus1  
+    }
+    out <- list(DawNO=Dw_nplus1,nIter=i,diffDaw=diffDw)
+    out
+  }
+  DawNO_result_fo <- italg(Dw0_fo)
+  DawNO_est_fo <- DawNO_result_fo$DawNO
+  
+  CawNO_est_fo <- (I + S*DawNO_est_fo)/DawNO_est_fo
+  
+  Ic <- I/(1-(fM+fH)*DawNO_est_fo/(2*(fM*fH)+(fH^3-fM^3)/(6*fM^2*fH^2*(fH-fM)/DawNO_est_fo^2)))
+  Sc <- S-DawNO_est_fo*Ic/2/fM/fH+(fM+fH)*DawNO_est_fo^2*Ic/6/fM^2/fH^2
+  
+  # iterative algorithm function, 3rd order
+  italgto <- function(SV,nIterAlg=10){
+    # object to store Dw values for each iteration
+    outIterAlg <- numeric(nIterAlg)
+    # set starting value (SV)
+    Dw_n <- SV
+    for(i in 1:nIterAlg){
+      Dw_nplus1 <- outIterAlg[i] <-  -Ic*(exp(-Dw_n/fL) - exp(-Dw_n/fM))/(eL-eM)
+      diffDw <- abs(Dw_n - Dw_nplus1)
+      #print(i);print(Dw_nplus1)
+      # stop if values of Dw_n and Dw_nplus1 are close enough
+      if(diffDw <0.001){break}
+      Dw_n <- Dw_nplus1  
+    }
+    out <- list(DawNO=Dw_nplus1,nIter=i,diffDaw=diffDw)
+    out
+  }
+  DawNO_result_to <- italgto(DawNO_est_fo)
+  DawNO_est_to <- DawNO_result_to$DawNO
+  
+  DawNO_est_final <- DawNO_est_to  
+  CawNO_est_final <- Ic/DawNO_est_final + Sc
+  CaNO_est_final <- Sc
+  JawNO_est_final <- DawNO_est_final*(CawNO_est_final - CaNO_est_final)
+  
+  outfinal <- c(  CaNO=unname(CaNO_est_final),
+                  DawNO=unname(DawNO_est_final),
+                  JawNO=unname(JawNO_est_final),
+                  CawNO=unname(CawNO_est_final)
+  )
+  # data checks (both should be true)
+  ## test CaNO estimate is positive
+  test1 <- CaNO_est_final > 0
+  ## test whether measured data is mathematically consistent with model
+  LHS <- (eL-eM)/(eM-eH)
+  RHS <- fH/fL*((fM-fL)/(fH-fM))
+  test2 <- LHS < RHS
+  ## To change the function to only give non-missing values for 
+  ## valid datasets that produce positive CaNO estimates, remove the 
+  ## comments from the following two lines
+  #if(!(test2)) outfinal[1:4] <- NA # leave in negative CaNO estimates
+  #if(!(test1 & test2)) outfinal[1:4] <- NA
+  c(outfinal,valid=unname(test2))
+}
+
+HMA_FINAL <- function(dat,X){
+  ids <- unique(dat$id)
+  # Stage I: HMA fits for each person
+  estCoef <- matrix(NA,ncol=5,nrow=length(ids))
+  rownames(estCoef) <- ids
+  colnames(estCoef) <- c("Ca","Daw","Jaw","Caw","valid")
+  for(i in 1:length(ids)){
+    dati <- subset(dat, id==ids[i], select=c(id,flow,eno))
+    dati <- subset(dati[order(dati$flow),],flow!=50) # drop flow=50 since HMA uses 3 flow rates (L/M/H)
+    avgFeNO <- tapply(dati$eno,dati$flow,mean,na.rm=TRUE)
+    fL <- 30
+    fM <- 100
+    fH <- 300
+    eL <- avgFeNO["30"]
+    eM <- avgFeNO["100"]
+    eH <- avgFeNO["300"]
+    # only run Hogman Algorithm if all 3 (low=30,medium=100,high=300) flows are available
+    if(any(is.na(c(fL,fM,fH,eL,eM,eH)))){
+      HogmanResultsi <- c(Ca=NA,Daw=NA,Jaw=NA,Caw=NA,valid=NA)
+    }
+    else{
+      HogmanResultsi <- Hogman3rdOrderAlg(fL,fM,fH,eL,eM,eH)
+      # if algorithm produces any NaN/Inf, replace with all missing (happens 1x in CHS)
+      if(any(is.na(HogmanResultsi))){HogmanResultsi <- c(CaNO=NA,DawNO=NA,JawNO=NA,CawNO=NA,valid=NA)}
+    }
+    estCoef[i,] <- HogmanResultsi
+  }
+  estCoef <- as.data.frame(estCoef)
+  estCoef$logCaw <- log(estCoef$Caw)
+  estCoef$logDaw <- log(estCoef$Daw)
+  # Stage II: simple linear regressions
+  fit_Ca     <- lm(estCoef$Ca~X)
+  fit_logCaw <- lm(estCoef$logCaw~X)
+  fit_logDaw <- lm(estCoef$logDaw~X)
+  # output
+  out <- matrix(NA,nrow=6,ncol=5)
+  rownames(out) <- c("Ca.(Intercept)","Ca.X","logCaw.(Intercept)","logCaw.X","logDaw.(Intercept)","logDaw.X")
+  colnames(out) <- c("est","lb","ub","se","p")
+  out <- as.data.frame(out)
+  
+  out[c("Ca.(Intercept)","Ca.X"),c("est","se","p")] <- summary(fit_Ca)$coef[,c("Estimate","Std. Error","Pr(>|t|)")]
+  out[c("logCaw.(Intercept)","logCaw.X"),c("est","se","p")] <- summary(fit_logCaw)$coef[,c("Estimate","Std. Error","Pr(>|t|)")]
+  out[c("logDaw.(Intercept)","logDaw.X"),c("est","se","p")] <- summary(fit_logDaw)$coef[,c("Estimate","Std. Error","Pr(>|t|)")]
+  
+  out[c("Ca.(Intercept)","Ca.X"),c("lb","ub")] <- confint(fit_Ca)[,c("2.5 %","97.5 %")]
+  out[c("logCaw.(Intercept)","logCaw.X"),c("lb","ub")] <- confint(fit_logCaw)[,c("2.5 %","97.5 %")]
+  out[c("logDaw.(Intercept)","logDaw.X"),c("lb","ub")] <- confint(fit_logDaw)[,c("2.5 %","97.5 %")]
+  
+  out
+}
+
+```
+```{r,eval=FALSE}
+# HMA function is too long, it is hided. 
+
+starttime=proc.time()[3]
+
+HMAout <- tryCatch(HMA_FINAL(dat,X), error = function(x) {
+    print("Error with HMA");
+    warnings();
+    data.frame(    est=rep(NA,6),
+                   lb=rep(NA,6),
+                   ub=rep(NA,6),
+                   se=rep(NA,6),
+                   p=rep(NA,6)
+    )
+  }
+)
+elapsed=proc.time()[3]-starttime
+save(elapsed,HMAout, file="HMA_S1.Rdata")
+  
+```
+
+
+### 2.4 TS-NLME and U-NLME
+
+The TS-NLME uses the same dataset structure as the TS-NLS and TS-HMA. We can either use the results from the TS-NLS as starting values or fit the model all over again using broadly chosen starting values.
+
+U-NLME use the fitted value in TS-NLME as starting values, include the linear relations with covariate in the iterated fitting.
+```{r,eval=FALSE,echo=FALSE}
+#TS-NLME function
+nlme_sep_FINAL <- function(myfit){
+  # Extract EB estimates of NO parameters (State I)
+  ranefdata         <-ranef(myfit,augFrame=T)
+  ranefdata$Ca      <-ranefdata$Ca+fixef(myfit)[1]
+  ranefdata$logCaw  <-ranefdata$logCaw+fixef(myfit)[2]
+  ranefdata$logDaw  <-ranefdata$logDaw+fixef(myfit)[3]
+  # Simple linear regressions (Stage II)
+  fit_Ca     <- lm(Ca~X,     data=ranefdata)
+  fit_logCaw <- lm(logCaw~X, data=ranefdata)
+  fit_logDaw <- lm(logDaw~X, data=ranefdata)
+  
+  # output
+  out <- matrix(NA,nrow=6,ncol=5)
+  rownames(out) <- c("Ca.(Intercept)","Ca.X","logCaw.(Intercept)","logCaw.X","logDaw.(Intercept)","logDaw.X")
+  colnames(out) <- c("est","lb","ub","se","p")
+  out <- as.data.frame(out)
+  
+  out[c("Ca.(Intercept)","Ca.X"),c("est","se","p")] <- summary(fit_Ca)$coef[,c("Estimate","Std. Error","Pr(>|t|)")]
+  out[c("logCaw.(Intercept)","logCaw.X"),c("est","se","p")] <- summary(fit_logCaw)$coef[,c("Estimate","Std. Error","Pr(>|t|)")]
+  out[c("logDaw.(Intercept)","logDaw.X"),c("est","se","p")] <- summary(fit_logDaw)$coef[,c("Estimate","Std. Error","Pr(>|t|)")]
+  
+  out[c("Ca.(Intercept)","Ca.X"),c("lb","ub")] <- confint(fit_Ca)[,c("2.5 %","97.5 %")]
+  out[c("logCaw.(Intercept)","logCaw.X"),c("lb","ub")] <- confint(fit_logCaw)[,c("2.5 %","97.5 %")]
+  out[c("logDaw.(Intercept)","logDaw.X"),c("lb","ub")] <- confint(fit_logDaw)[,c("2.5 %","97.5 %")]
+  
+  out
+}
+#Fit TS-NLME
+starttime=proc.time()[3]
+    
+    
+    
+print("nlmeSepStart")
+fitD.nlme <- tryCatch(nlme(nlsList(logeno ~ 
+                          log(exp(logCaw) + (Ca-exp(logCaw))*exp(-exp(logDaw)/flow))|id,
+                          data=dat, start=list(Ca = 1.5, logCaw =4 , logDaw = 3),
+                          control=list(tolerance=0.001)), 
+                          random= pdDiag(Ca+logCaw+logDaw ~ 1),
+                          verbose=FALSE, 
+                          control=list(tolerance = 0.1,maxIter=100,pnlsTol=1e-4,msVerbose=TRUE)), 
+                      error = function(x) {
+                                 print("Error with nlmeSepstart");
+                                 nlmeSepout<-data.frame(    est=rep(NA,6),
+                                                            lb=rep(NA,6),
+                                                            ub=rep(NA,6),
+                                                            se=rep(NA,6),
+                                                            p=rep(NA,6)
+                                 )
+                               }
+    )
+    
+    
+print("nlmeSepStart_u")
+fitU.nlme <- tryCatch(update(fitD.nlme,random=pdLogChol(Ca+logCaw+logDaw ~ 1),
+                             verbose=FALSE), error = function(x) {
+      print("Error with nlmeSimStart");
+      nlmeSimout<-data.frame(    est=rep(NA,6),
+                                 lb=rep(NA,6),
+                                 ub=rep(NA,6),
+                                 se=rep(NA,6),
+                                 p=rep(NA,6)
+      )
+    }
+    )
+    
+# out put TS-NLME results
+nlmeSepout <- tryCatch(nlme_sep_FINAL(fitU.nlme), error = function(x) {
+      print("Error with nlmeSep");
+      nlmeSepout<-data.frame(est=rep(NA,6),
+                             lb=rep(NA,6),
+                             ub=rep(NA,6),
+                             se=rep(NA,6),
+                             p=rep(NA,6)
+      )
+    }
+    )
+#U-NLME function
+nlme_sim_FINAL <- function(myfit){
+  startFix <- fixef(myfit)
+  # nlmeSim
+  fit4.nlme <- update(myfit,
+                      fixed = list(Ca ~ X, logCaw ~ X, logDaw ~ X),
+                      start = c(startFix[1],0,startFix[2],0,startFix[3],0),
+                      control=list(tolerance=0.01)
+  )
+  Ttable <- summary(fit4.nlme)$tTable
+  lb_est_ub <- intervals(fit4.nlme)$fixed
+  out <- data.frame(    est=Ttable[,"Value"],
+                        lb=lb_est_ub[,"lower"],
+                        ub=lb_est_ub[,"upper"],
+                        se=Ttable[,"Std.Error"],
+                        p=Ttable[,"p-value"]
+  )
+  out
+  # FOR NLME_sim, you likely want to save additional output for more direct comparison with JAGS
+  # like the VAR/COV of random effects, SD error
+}
+
+# output U-NLME results
+nlmeSimout <- tryCatch(nlme_sim_FINAL(fitU.nlme), error = function(x) {
+      print("Error with nlmeSim");
+      nlmeSimout<-data.frame(    est=rep(NA,6),
+                                 lb=rep(NA,6),
+                                 ub=rep(NA,6),
+                                 se=rep(NA,6),
+                                 p=rep(NA,6)
+      )
+    }
+    )
+
+    
+save(nlmeSepout,nlmeSimout, file="NLME_S1.Rdata")    
+
+
+```
+
+## 3. Model comparisom
+
+Here we show the exmaple code for comparing results generated via each model in a box plot with means and confidence intervals/credible sets.
+
+```{r,eval=FALSE}
+load("UHB_S1.Rdata")
+load("NLS_S1.Rdata")
+load("HMA_S1.Rdata")
+load("NLME_S1.Rdata")
+library(latex2exp)
+JagsXsummary<-result$summary[c("alpha_Ca","alpha_logCaw","alpha_logDaw",
+                 "beta_Ca","beta_logCaw","beta_logDaw"),c("mean","2.5%","97.5%")]
+CIbeta_Ca<-as.data.frame(
+  rbind(as.matrix(NLSout["Ca.X",c("NLS_est","NLS_lb","NLS_ub")]),
+        as.matrix(HMAout["Ca.X",c("est","lb","ub")]),
+        as.matrix(nlmeSepout["Ca.X",c("est","lb","ub")]),
+        as.matrix(nlmeSimout["Ca.X",c("est","lb","ub")]),
+        JagsXsummary["beta_Ca",]
+        
+        ))
+CIbeta_Ca$model<-c("01.TS-NLS","02.TS-HMA","03.TS-NLME","04.U-NLME","05.U-HB")
+colnames(CIbeta_Ca)<-c("Estimation","lb","ub","model")
+library(plotrix)
+plotCI(x=c(1:5),y=CIbeta_Ca$Estimation,err="y",ui=CIbeta_Ca$ub,li=CIbeta_Ca$lb,ylab="Estimation",xlab="models",ylim=c(-1,1),xaxt = "n",main=TeX('Determinent of C_{A}'))
+axis(side=1,at=c(1:5),labels=XlabCHS,tick=FALSE,cex.axis=0.8)
+abline(h=0)
+
+
+```
+
+
+
+
